@@ -6,8 +6,11 @@ Usage:
   npm install
   node scripts/kinopoisk_votes_exporter.js "https://www.kinopoisk.ru/user/<numeric_id>/votes/" ratings.csv
 
-This version uses puppeteer-core and an installed Chrome/Edge.
-It does not require Puppeteer to download bundled Chrome.
+This version:
+  - uses puppeteer-core and installed Chrome/Edge;
+  - does not depend on Puppeteer's bundled Chrome;
+  - follows the real "next page" link from Kinopoisk instead of guessing /page/N/ URLs;
+  - retries extraction if Kinopoisk reloads the page and Puppeteer gets a detached frame.
 */
 
 const fs = require("fs");
@@ -22,7 +25,8 @@ if (!inputUrl) {
 }
 
 const NAVIGATION_TIMEOUT_MS = 60000;
-const PAGE_WAIT_MS = 1500;
+const PAGE_WAIT_MS = 2000;
+const MAX_PAGES = 500;
 
 const CSV_HEADERS = [
   "dateTime",
@@ -84,6 +88,7 @@ function findInstalledBrowser() {
     );
   } else if (process.platform === "darwin") {
     candidates.push(
+      "/Applications/Google Chrome.app/Contents/MOS/Google Chrome",
       "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
       "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
       "/Applications/Chromium.app/Contents/MacOS/Chromium"
@@ -108,19 +113,8 @@ function findInstalledBrowser() {
   return null;
 }
 
-function votesPageUrl(baseUrl, pageNumber) {
-  const url = new URL(baseUrl);
-
-  let pathname = url.pathname;
-  pathname = pathname.replace(/\/page\/\d+\/?/, "/");
-  pathname = pathname.replace(/\/+$/, "/");
-
-  if (pageNumber > 1) {
-    pathname += `page/${pageNumber}/`;
-  }
-
-  url.pathname = pathname;
-  return url.href;
+function isDetachedFrameError(error) {
+  return String(error && (error.message || error)).includes("detached Frame");
 }
 
 async function waitForHumanIfNeeded(page) {
@@ -320,13 +314,78 @@ async function extractRowsFromPage(page) {
   });
 }
 
-async function hasNextPage(page, currentPage) {
-  return await page.evaluate((currentPage) => {
+async function safeExtractRowsFromPage(page) {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      await page.waitForSelector("body", { timeout: 15000 });
+      await sleep(PAGE_WAIT_MS);
+      return await extractRowsFromPage(page);
+    } catch (error) {
+      if (isDetachedFrameError(error) && attempt < 3) {
+        console.warn(`Detached frame during extraction. Retry ${attempt}/3...`);
+        await sleep(2500);
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  return [];
+}
+
+async function getNextPageUrl(page, currentPageNumber) {
+  return await page.evaluate((currentPageNumber) => {
+    function absUrl(url) {
+      if (!url) return "";
+
+      try {
+        return new URL(url, location.origin).href;
+      } catch {
+        return url;
+      }
+    }
+
+    const currentUrl = location.href.replace(/#.*$/, "");
     const links = Array.from(document.querySelectorAll("a[href]"));
-    const nextText = links.some((a) => /след|next|›|»/i.test(a.textContent || ""));
-    const nextNumber = links.some((a) => (a.textContent || "").trim() === String(currentPage + 1));
-    return nextText || nextNumber;
-  }, currentPage);
+
+    const candidates = links
+      .map((a) => {
+        const href = absUrl(a.getAttribute("href") || "");
+        const label = (a.textContent || "").replace(/\s+/g, " ").trim();
+        const aria = (a.getAttribute("aria-label") || "").trim();
+
+        return { href, label, aria };
+      })
+      .filter((item) => item.href && item.href !== currentUrl)
+      .filter((item) => /\/user\/\d+\/votes\//.test(item.href) || /\/votes\//.test(item.href));
+
+    const nextNumber = String(currentPageNumber + 1);
+
+    const exactNumber = candidates.find((item) => item.label === nextNumber);
+    if (exactNumber) return exactNumber.href;
+
+    const nextText = candidates.find((item) => /след|next|дальше|›|»/i.test(`${item.label} ${item.aria}`));
+    if (nextText) return nextText.href;
+
+    const pageNumberLinks = candidates
+      .map((item) => {
+        const matchFromLabel = item.label.match(/^\d+$/);
+        if (matchFromLabel) return { ...item, pageNumber: Number(item.label) };
+
+        const matchFromUrl = item.href.match(/\/page\/(\d+)\/?/);
+        if (matchFromUrl) return { ...item, pageNumber: Number(matchFromUrl[1]) };
+
+        return null;
+      })
+      .filter(Boolean)
+      .filter((item) => item.pageNumber > currentPageNumber)
+      .sort((a, b) => a.pageNumber - b.pageNumber);
+
+    if (pageNumberLinks.length > 0) return pageNumberLinks[0].href;
+
+    return "";
+  }, currentPageNumber);
 }
 
 async function launchBrowser() {
@@ -361,6 +420,7 @@ async function launchBrowser() {
 
   const allRows = [];
   const seenUrls = new Set();
+  const visitedPages = new Set();
 
   try {
     console.log(`Opening: ${inputUrl}`);
@@ -369,22 +429,23 @@ async function launchBrowser() {
     await trySetMaxPerPage(page);
 
     let pageNumber = 1;
-    let emptyPages = 0;
 
-    while (pageNumber <= 500) {
-      const url = votesPageUrl(inputUrl, pageNumber);
+    while (pageNumber <= MAX_PAGES) {
+      const currentUrl = page.url().replace(/#.*$/, "");
+
+      if (visitedPages.has(currentUrl)) {
+        console.log(`Already visited page URL: ${currentUrl}. Stopping.`);
+        break;
+      }
+
+      visitedPages.add(currentUrl);
 
       console.log("");
-      console.log(`Page ${pageNumber}: ${url}`);
-
-      await page.goto(url, { waitUntil: "domcontentloaded" }).catch(async (error) => {
-        console.warn(`Navigation warning: ${error.message}`);
-      });
+      console.log(`Page ${pageNumber}: ${currentUrl}`);
 
       await waitForHumanIfNeeded(page);
-      await sleep(PAGE_WAIT_MS);
 
-      const rows = await extractRowsFromPage(page);
+      const rows = await safeExtractRowsFromPage(page);
       const newRows = [];
 
       for (const row of rows) {
@@ -398,26 +459,20 @@ async function launchBrowser() {
 
       console.log(`Found on page: ${rows.length}. New: ${newRows.length}. Total: ${allRows.length}.`);
 
-      if (newRows.length === 0) {
-        emptyPages += 1;
-      } else {
-        emptyPages = 0;
-      }
-
       writeCsv(allRows, outputPath);
       console.log(`Saved: ${outputPath}`);
 
-      const nextExists = await hasNextPage(page, pageNumber);
+      const nextUrl = await getNextPageUrl(page, pageNumber);
 
-      if (!nextExists && pageNumber > 1) {
-        console.log("No next page detected. Stopping.");
+      if (!nextUrl) {
+        console.log("No next page link detected. Stopping.");
         break;
       }
 
-      if (emptyPages >= 2) {
-        console.log("Two empty pages in a row. Stopping.");
-        break;
-      }
+      console.log(`Next page: ${nextUrl}`);
+
+      await page.goto(nextUrl, { waitUntil: "domcontentloaded" });
+      await waitForHumanIfNeeded(page);
 
       pageNumber += 1;
     }
