@@ -25,7 +25,7 @@ scripts/kinopoisk_votes_exporter.js
 В корне проекта выполните:
 
 ```bash
-npm install puppeteer
+npm install 
 ```
 
 Puppeteer может скачать совместимый Chromium/Chrome. Это нормально.
