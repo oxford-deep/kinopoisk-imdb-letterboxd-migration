@@ -9,8 +9,11 @@ Usage:
 This version:
   - uses puppeteer-core and installed Chrome/Edge;
   - does not depend on Puppeteer's bundled Chrome;
-  - follows the real "next page" link from Kinopoisk instead of guessing /page/N/ URLs;
-  - retries extraction if Kinopoisk reloads the page and Puppeteer gets a detached frame.
+  - does not follow arbitrary "next" links from Kinopoisk;
+  - iterates explicit user-vote buckets 1..10:
+      /votes/list/vote/<rating>/vs/vote/
+      /votes/list/vote/<rating>/vs/vote/page/<page>/
+  - fills userVote from the current bucket if it cannot parse it from the page.
 */
 
 const fs = require("fs");
@@ -25,8 +28,8 @@ if (!inputUrl) {
 }
 
 const NAVIGATION_TIMEOUT_MS = 60000;
-const PAGE_WAIT_MS = 2000;
-const MAX_PAGES = 500;
+const PAGE_WAIT_MS = 1500;
+const MAX_PAGES_PER_BUCKET = 100;
 
 const CSV_HEADERS = [
   "dateTime",
@@ -88,7 +91,6 @@ function findInstalledBrowser() {
     );
   } else if (process.platform === "darwin") {
     candidates.push(
-      "/Applications/Google Chrome.app/Contents/MOS/Google Chrome",
       "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
       "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
       "/Applications/Chromium.app/Contents/MacOS/Chromium"
@@ -111,6 +113,32 @@ function findInstalledBrowser() {
   }
 
   return null;
+}
+
+function parseUserVotesBaseUrl(rawUrl) {
+  const url = new URL(rawUrl);
+  const match = url.pathname.match(/\/user\/(\d+)\/votes\//);
+
+  if (!match) {
+    throw new Error(
+      "Could not parse numeric Kinopoisk user id from URL. Expected URL like: https://www.kinopoisk.ru/user/123456/votes/"
+    );
+  }
+
+  return {
+    origin: url.origin,
+    userId: match[1],
+  };
+}
+
+function bucketPageUrl(origin, userId, vote, pageNumber) {
+  const base = `${origin}/user/${userId}/votes/list/vote/${vote}/vs/vote/`;
+
+  if (pageNumber <= 1) {
+    return base;
+  }
+
+  return `${base}page/${pageNumber}/`;
 }
 
 function isDetachedFrameError(error) {
@@ -184,7 +212,14 @@ async function extractRowsFromPage(page) {
     }
 
     function closestItem(link) {
-      const selectors = [".item", ".profileFilmsList__item", ".styles_root__", "li", "tr", "article"];
+      const selectors = [
+        ".item",
+        ".profileFilmsList__item",
+        ".styles_root__",
+        "li",
+        "tr",
+        "article",
+      ];
 
       for (const selector of selectors) {
         const node = link.closest(selector);
@@ -227,7 +262,12 @@ async function extractRowsFromPage(page) {
     }
 
     function parseOriginalName(item, itemText, localName) {
-      const originalEl = first(item, [".nameEng", ".name-original", "[class*='original']", "[class*='secondary']"]);
+      const originalEl = first(item, [
+        ".nameEng",
+        ".name-original",
+        "[class*='original']",
+        "[class*='secondary']",
+      ]);
 
       const direct = text(originalEl);
       if (direct) {
@@ -334,60 +374,6 @@ async function safeExtractRowsFromPage(page) {
   return [];
 }
 
-async function getNextPageUrl(page, currentPageNumber) {
-  return await page.evaluate((currentPageNumber) => {
-    function absUrl(url) {
-      if (!url) return "";
-
-      try {
-        return new URL(url, location.origin).href;
-      } catch {
-        return url;
-      }
-    }
-
-    const currentUrl = location.href.replace(/#.*$/, "");
-    const links = Array.from(document.querySelectorAll("a[href]"));
-
-    const candidates = links
-      .map((a) => {
-        const href = absUrl(a.getAttribute("href") || "");
-        const label = (a.textContent || "").replace(/\s+/g, " ").trim();
-        const aria = (a.getAttribute("aria-label") || "").trim();
-
-        return { href, label, aria };
-      })
-      .filter((item) => item.href && item.href !== currentUrl)
-      .filter((item) => /\/user\/\d+\/votes\//.test(item.href) || /\/votes\//.test(item.href));
-
-    const nextNumber = String(currentPageNumber + 1);
-
-    const exactNumber = candidates.find((item) => item.label === nextNumber);
-    if (exactNumber) return exactNumber.href;
-
-    const nextText = candidates.find((item) => /след|next|дальше|›|»/i.test(`${item.label} ${item.aria}`));
-    if (nextText) return nextText.href;
-
-    const pageNumberLinks = candidates
-      .map((item) => {
-        const matchFromLabel = item.label.match(/^\d+$/);
-        if (matchFromLabel) return { ...item, pageNumber: Number(item.label) };
-
-        const matchFromUrl = item.href.match(/\/page\/(\d+)\/?/);
-        if (matchFromUrl) return { ...item, pageNumber: Number(matchFromUrl[1]) };
-
-        return null;
-      })
-      .filter(Boolean)
-      .filter((item) => item.pageNumber > currentPageNumber)
-      .sort((a, b) => a.pageNumber - b.pageNumber);
-
-    if (pageNumberLinks.length > 0) return pageNumberLinks[0].href;
-
-    return "";
-  }, currentPageNumber);
-}
-
 async function launchBrowser() {
   const executablePath = findInstalledBrowser();
 
@@ -406,6 +392,7 @@ async function launchBrowser() {
 }
 
 (async () => {
+  const { origin, userId } = parseUserVotesBaseUrl(inputUrl);
   const outputPath = path.resolve(outputFile);
   const browser = await launchBrowser();
 
@@ -420,7 +407,6 @@ async function launchBrowser() {
 
   const allRows = [];
   const seenUrls = new Set();
-  const visitedPages = new Set();
 
   try {
     console.log(`Opening: ${inputUrl}`);
@@ -428,53 +414,58 @@ async function launchBrowser() {
     await waitForHumanIfNeeded(page);
     await trySetMaxPerPage(page);
 
-    let pageNumber = 1;
-
-    while (pageNumber <= MAX_PAGES) {
-      const currentUrl = page.url().replace(/#.*$/, "");
-
-      if (visitedPages.has(currentUrl)) {
-        console.log(`Already visited page URL: ${currentUrl}. Stopping.`);
-        break;
-      }
-
-      visitedPages.add(currentUrl);
-
+    for (let vote = 1; vote <= 10; vote += 1) {
       console.log("");
-      console.log(`Page ${pageNumber}: ${currentUrl}`);
+      console.log(`=== User vote bucket: ${vote}/10 ===`);
 
-      await waitForHumanIfNeeded(page);
+      let emptyPagesInRow = 0;
 
-      const rows = await safeExtractRowsFromPage(page);
-      const newRows = [];
+      for (let pageNumber = 1; pageNumber <= MAX_PAGES_PER_BUCKET; pageNumber += 1) {
+        const url = bucketPageUrl(origin, userId, vote, pageNumber);
 
-      for (const row of rows) {
-        const key = row.url || `${row.name}-${row.year}-${row.userVote}`;
-        if (!seenUrls.has(key)) {
-          seenUrls.add(key);
-          newRows.push(row);
-          allRows.push(row);
+        console.log("");
+        console.log(`Vote ${vote}, page ${pageNumber}: ${url}`);
+
+        await page.goto(url, { waitUntil: "domcontentloaded" }).catch(async (error) => {
+          console.warn(`Navigation warning: ${error.message}`);
+        });
+
+        await waitForHumanIfNeeded(page);
+
+        const rows = await safeExtractRowsFromPage(page);
+
+        for (const row of rows) {
+          if (!row.userVote) {
+            row.userVote = String(vote);
+          }
+        }
+
+        const newRows = [];
+
+        for (const row of rows) {
+          const key = row.url || `${row.name}-${row.year}-${row.userVote}`;
+          if (!seenUrls.has(key)) {
+            seenUrls.add(key);
+            newRows.push(row);
+            allRows.push(row);
+          }
+        }
+
+        console.log(`Found on page: ${rows.length}. New: ${newRows.length}. Total: ${allRows.length}.`);
+        writeCsv(allRows, outputPath);
+        console.log(`Saved: ${outputPath}`);
+
+        if (rows.length === 0 || newRows.length === 0) {
+          emptyPagesInRow += 1;
+        } else {
+          emptyPagesInRow = 0;
+        }
+
+        if (emptyPagesInRow >= 1) {
+          console.log(`No new rows for vote ${vote}. Moving to next vote bucket.`);
+          break;
         }
       }
-
-      console.log(`Found on page: ${rows.length}. New: ${newRows.length}. Total: ${allRows.length}.`);
-
-      writeCsv(allRows, outputPath);
-      console.log(`Saved: ${outputPath}`);
-
-      const nextUrl = await getNextPageUrl(page, pageNumber);
-
-      if (!nextUrl) {
-        console.log("No next page link detected. Stopping.");
-        break;
-      }
-
-      console.log(`Next page: ${nextUrl}`);
-
-      await page.goto(nextUrl, { waitUntil: "domcontentloaded" });
-      await waitForHumanIfNeeded(page);
-
-      pageNumber += 1;
     }
 
     console.log("");
