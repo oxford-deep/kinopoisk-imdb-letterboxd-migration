@@ -40,6 +40,13 @@ docs/kinopoisk_export_notes.md
 
 ## 1. Подготовить CSV из Кинопоиска
 
+```text
+npm install puppeteer
+node scripts/kinopoisk_votes_exporter.js "https://www.kinopoisk.ru/user/<numeric_id>/votes/" ratings.csv
+```
+сначала получаем ratings.csv этим скриптом
+потом уже запускаем kp_to_imdb.py
+
 Положите CSV с оценками в корень проекта и назовите его:
 
 ```text
