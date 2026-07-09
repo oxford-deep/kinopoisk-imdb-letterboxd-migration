@@ -47,40 +47,27 @@ const CSV_HEADERS = [
   "votesImdb",
 ];
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
 function csvEscape(value) {
   if (value === null || value === undefined) return "";
-
   const text = String(value);
-  if (/[",\r\n]/.test(text)) {
-    return `"${text.replace(/"/g, '""')}"`;
-  }
-
+  if (/[",\r\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
   return text;
 }
 
 function writeCsv(rows, filePath) {
-  const lines = [];
-  lines.push(CSV_HEADERS.join(","));
-
-  for (const row of rows) {
-    lines.push(CSV_HEADERS.map((header) => csvEscape(row[header])).join(","));
-  }
-
+  const lines = [CSV_HEADERS.join(",")];
+  for (const row of rows) lines.push(CSV_HEADERS.map((header) => csvEscape(row[header])).join(","));
   fs.writeFileSync(filePath, "\uFEFF" + lines.join("\n"), "utf8");
 }
 
 function findInstalledBrowser() {
   const candidates = [];
-
   if (process.platform === "win32") {
     const local = process.env.LOCALAPPDATA || "";
     const programFiles = process.env.PROGRAMFILES || "C:\\Program Files";
     const programFilesX86 = process.env["PROGRAMFILES(X86)"] || "C:\\Program Files (x86)";
-
     candidates.push(
       path.join(programFiles, "Google", "Chrome", "Application", "chrome.exe"),
       path.join(programFilesX86, "Google", "Chrome", "Application", "chrome.exe"),
@@ -105,65 +92,31 @@ function findInstalledBrowser() {
       "/usr/bin/microsoft-edge-stable"
     );
   }
-
-  for (const candidate of candidates) {
-    if (candidate && fs.existsSync(candidate)) {
-      return candidate;
-    }
-  }
-
-  return null;
+  return candidates.find((candidate) => candidate && fs.existsSync(candidate)) || null;
 }
 
 function parseUserVotesBaseUrl(rawUrl) {
   const url = new URL(rawUrl);
   const match = url.pathname.match(/\/user\/(\d+)\/votes\//);
-
-  if (!match) {
-    throw new Error(
-      "Could not parse numeric Kinopoisk user id from URL. Expected URL like: https://www.kinopoisk.ru/user/123456/votes/"
-    );
-  }
-
-  return {
-    origin: url.origin,
-    userId: match[1],
-  };
+  if (!match) throw new Error("Could not parse numeric Kinopoisk user id from URL. Expected URL like: https://www.kinopoisk.ru/user/123456/votes/");
+  return { origin: url.origin, userId: match[1] };
 }
 
 function bucketPageUrl(origin, userId, vote, pageNumber) {
   const base = `${origin}/user/${userId}/votes/list/vote/${vote}/vs/vote/`;
-
-  if (pageNumber <= 1) {
-    return base;
-  }
-
-  return `${base}page/${pageNumber}/`;
+  return pageNumber <= 1 ? base : `${base}page/${pageNumber}/`;
 }
 
-function isDetachedFrameError(error) {
-  return String(error && (error.message || error)).includes("detached Frame");
-}
+function isDetachedFrameError(error) { return String(error && (error.message || error)).includes("detached Frame"); }
 
 async function waitForHumanIfNeeded(page) {
   const title = await page.title().catch(() => "");
   const bodyText = await page.evaluate(() => document.body ? document.body.innerText.slice(0, 2000) : "").catch(() => "");
-
-  const looksLikeCaptcha =
-    /captcha|капча|security|проверка|робот|robot|access denied|доступ/i.test(title) ||
-    /captcha|капча|security check|проверка|робот|robot|access denied|доступ ограничен/i.test(bodyText);
-
+  const looksLikeCaptcha = /captcha|капча|security|проверка|робот|robot|access denied|доступ/i.test(title) || /captcha|капча|security check|проверка|робот|robot|access denied|доступ ограничен/i.test(bodyText);
   if (!looksLikeCaptcha) return;
-
-  console.log("");
-  console.log("Kinopoisk seems to show captcha / security / login page.");
-  console.log("Solve it manually in the opened browser, then press Enter here.");
-  console.log("");
-
-  await new Promise((resolve) => {
-    process.stdin.resume();
-    process.stdin.once("data", () => resolve());
-  });
+  console.log("\nKinopoisk seems to show captcha / security / login page.");
+  console.log("Solve it manually in the opened browser, then press Enter here.\n");
+  await new Promise((resolve) => { process.stdin.resume(); process.stdin.once("data", () => resolve()); });
 }
 
 async function trySetMaxPerPage(page) {
@@ -179,177 +132,75 @@ async function trySetMaxPerPage(page) {
 
 async function extractRowsFromPage(page) {
   return await page.evaluate(() => {
-    function text(el) {
-      return el ? (el.textContent || "").replace(/\s+/g, " ").trim() : "";
-    }
-
-    function attr(el, name) {
-      return el ? (el.getAttribute(name) || "") : "";
-    }
-
-    function absUrl(url) {
-      if (!url) return "";
-
-      try {
-        return new URL(url, location.origin).href;
-      } catch {
-        return url;
-      }
-    }
-
-    function first(root, selectors) {
-      for (const selector of selectors) {
-        const el = root.querySelector(selector);
-        if (el) return el;
-      }
-      return null;
-    }
-
-    function allFilmLinks() {
-      return Array
-        .from(document.querySelectorAll('a[href*="/film/"], a[href*="/series/"]'))
-        .filter((a) => /\/(film|series)\/\d+\/?/.test(a.getAttribute("href") || ""));
-    }
-
+    function text(el) { return el ? (el.textContent || "").replace(/\s+/g, " ").trim() : ""; }
+    function attr(el, name) { return el ? (el.getAttribute(name) || "") : ""; }
+    function absUrl(url) { try { return url ? new URL(url, location.origin).href : ""; } catch { return url; } }
+    function first(root, selectors) { for (const selector of selectors) { const el = root.querySelector(selector); if (el) return el; } return null; }
+    function allFilmLinks() { return Array.from(document.querySelectorAll('a[href*="/film/"], a[href*="/series/"]')).filter((a) => /\/(film|series)\/\d+\/?/.test(a.getAttribute("href") || "")); }
     function closestItem(link) {
-      const selectors = [
-        ".item",
-        ".profileFilmsList__item",
-        ".styles_root__",
-        "li",
-        "tr",
-        "article",
-      ];
-
-      for (const selector of selectors) {
+      for (const selector of [".item", ".profileFilmsList__item", ".styles_root__", "li", "tr", "article"]) {
         const node = link.closest(selector);
         if (node && text(node).length > text(link).length) return node;
       }
-
       return link.parentElement || link;
     }
-
-    function parseYear(raw) {
-      const match = String(raw || "").match(/\b(18|19|20)\d{2}\b/);
-      return match ? match[0] : "";
-    }
-
-    function parseDuration(raw) {
-      const match = String(raw || "").match(/(\d{1,3})\s*(мин|m|min)/i);
-      return match ? match[1] : "";
-    }
-
-    function parseFloatText(raw) {
-      const match = String(raw || "").replace(",", ".").match(/\b\d{1,2}(?:\.\d)?\b/);
-      return match ? match[0] : "";
-    }
-
+    function parseYear(raw) { const match = String(raw || "").match(/\b(18|19|20)\d{2}\b/); return match ? match[0] : ""; }
+    function parseDuration(raw) { const match = String(raw || "").match(/(\d{1,3})\s*(мин|m|min)/i); return match ? match[1] : ""; }
+    function parseFloatText(raw) { const match = String(raw || "").replace(",", ".").match(/\b\d{1,2}(?:\.\d)?\b/); return match ? match[0] : ""; }
     function parseUserVote(itemText, item) {
-      const voteEl = first(item, [
-        ".vote",
-        ".userVote",
-        ".rating__value",
-        "[class*='userVote']",
-        "[class*='vote']",
-        "[class*='rating']",
-      ]);
-
+      const voteEl = first(item, [".vote", ".userVote", ".rating__value", "[class*='userVote']", "[class*='vote']", "[class*='rating']"]);
       const fromElement = parseFloatText(text(voteEl));
       if (fromElement) return fromElement;
-
       const match = itemText.match(/(?:моя оценка|ваша оценка|оценка)\D{0,20}([1-9]|10)\b/i);
       return match ? match[1] : "";
     }
-
     function parseOriginalName(item, itemText, localName) {
-      const originalEl = first(item, [
-        ".nameEng",
-        ".name-original",
-        "[class*='original']",
-        "[class*='secondary']",
-      ]);
-
+      const originalEl = first(item, [".nameEng", ".name-original", "[class*='original']", "[class*='secondary']"]);
       const direct = text(originalEl);
-      if (direct) {
-        return direct
-          .replace(/\b(18|19|20)\d{2}\b/g, "")
-          .replace(/\d{1,3}\s*(мин|m|min)/ig, "")
-          .replace(/\s+/g, " ")
-          .trim();
-      }
-
-      const lines = itemText
-        .split(/\n| {2,}/)
-        .map((x) => x.trim())
-        .filter(Boolean);
-
+      if (direct) return direct.replace(/\b(18|19|20)\d{2}\b/g, "").replace(/\d{1,3}\s*(мин|m|min)/ig, "").replace(/\s+/g, " ").trim();
+      const lines = itemText.split(/\n| {2,}/).map((x) => x.trim()).filter(Boolean);
       const localIndex = lines.findIndex((line) => line === localName);
       if (localIndex >= 0 && lines[localIndex + 1]) {
-        const candidate = lines[localIndex + 1]
-          .replace(/\b(18|19|20)\d{2}\b/g, "")
-          .replace(/\d{1,3}\s*(мин|m|min)/ig, "")
-          .replace(/\s+/g, " ")
-          .trim();
-
+        const candidate = lines[localIndex + 1].replace(/\b(18|19|20)\d{2}\b/g, "").replace(/\d{1,3}\s*(мин|m|min)/ig, "").replace(/\s+/g, " ").trim();
         if (candidate && candidate !== localName) return candidate;
       }
-
       return "";
     }
-
     function parseRatings(itemText) {
       const kpMatch = itemText.match(/КиноПоиск\D{0,20}(\d+(?:[.,]\d+)?)/i);
       const imdbMatch = itemText.match(/IMDb\D{0,20}(\d+(?:[.,]\d+)?)/i);
-
-      return {
-        rating: kpMatch ? kpMatch[1].replace(",", ".") : "",
-        votes: "",
-        ratingImdb: imdbMatch ? imdbMatch[1].replace(",", ".") : "",
-        votesImdb: "",
-      };
+      return { rating: kpMatch ? kpMatch[1].replace(",", ".") : "", votes: "", ratingImdb: imdbMatch ? imdbMatch[1].replace(",", ".") : "", votesImdb: "" };
     }
-
     const seen = new Set();
     const rows = [];
-
     for (const link of allFilmLinks()) {
       const href = absUrl(attr(link, "href"));
       const idMatch = href.match(/\/(film|series)\/(\d+)\/?/);
       if (!idMatch) continue;
-
       const uniqueKey = `${idMatch[1]}:${idMatch[2]}`;
       if (seen.has(uniqueKey)) continue;
       seen.add(uniqueKey);
-
       const item = closestItem(link);
       const itemText = text(item);
       const localName = text(link);
-
       if (!localName) continue;
-
-      const originalName = parseOriginalName(item, itemText, localName);
-      const year = parseYear(itemText);
-      const duration = parseDuration(itemText);
-      const userVote = parseUserVote(itemText, item);
       const ratings = parseRatings(itemText);
-
       rows.push({
         dateTime: "",
         url: href,
         isSeries: idMatch[1] === "series" ? "true" : "false",
         name: localName,
-        originalName,
-        year,
-        duration,
+        originalName: parseOriginalName(item, itemText, localName),
+        year: parseYear(itemText),
+        duration: parseDuration(itemText),
         isWatched: "true",
-        userVote,
+        userVote: parseUserVote(itemText, item),
         rating: ratings.rating,
         votes: ratings.votes,
         ratingImdb: ratings.ratingImdb,
         votesImdb: ratings.votesImdb,
       });
     }
-
     return rows;
   });
 }
@@ -366,115 +217,59 @@ async function safeExtractRowsFromPage(page) {
         await sleep(2500);
         continue;
       }
-
       throw error;
     }
   }
-
   return [];
 }
 
 async function launchBrowser() {
   const executablePath = findInstalledBrowser();
-
-  if (!executablePath) {
-    throw new Error("Could not find installed Chrome/Edge. Install Google Chrome or Microsoft Edge, then run the script again.");
-  }
-
+  if (!executablePath) throw new Error("Could not find installed Chrome/Edge. Install Google Chrome or Microsoft Edge, then run the script again.");
   console.log(`Using browser: ${executablePath}`);
-
-  return await puppeteer.launch({
-    executablePath,
-    headless: false,
-    defaultViewport: null,
-    args: ["--start-maximized", "--disable-blink-features=AutomationControlled"],
-  });
+  return await puppeteer.launch({ executablePath, headless: false, defaultViewport: null, args: ["--start-maximized", "--disable-blink-features=AutomationControlled"] });
 }
 
 (async () => {
   const { origin, userId } = parseUserVotesBaseUrl(inputUrl);
   const outputPath = path.resolve(outputFile);
   const browser = await launchBrowser();
-
   const page = await browser.newPage();
   page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
   page.setDefaultTimeout(NAVIGATION_TIMEOUT_MS);
-
-  await page.setUserAgent(
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-  );
-
+  await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
   const allRows = [];
   const seenUrls = new Set();
-
   try {
     console.log(`Opening: ${inputUrl}`);
     await page.goto(inputUrl, { waitUntil: "domcontentloaded" });
     await waitForHumanIfNeeded(page);
     await trySetMaxPerPage(page);
-
     for (let vote = 1; vote <= 10; vote += 1) {
-      console.log("");
-      console.log(`=== User vote bucket: ${vote}/10 ===`);
-
+      console.log(`\n=== User vote bucket: ${vote}/10 ===`);
       let emptyPagesInRow = 0;
-
       for (let pageNumber = 1; pageNumber <= MAX_PAGES_PER_BUCKET; pageNumber += 1) {
         const url = bucketPageUrl(origin, userId, vote, pageNumber);
-
-        console.log("");
-        console.log(`Vote ${vote}, page ${pageNumber}: ${url}`);
-
-        await page.goto(url, { waitUntil: "domcontentloaded" }).catch(async (error) => {
-          console.warn(`Navigation warning: ${error.message}`);
-        });
-
+        console.log(`\nVote ${vote}, page ${pageNumber}: ${url}`);
+        await page.goto(url, { waitUntil: "domcontentloaded" }).catch((error) => console.warn(`Navigation warning: ${error.message}`));
         await waitForHumanIfNeeded(page);
-
         const rows = await safeExtractRowsFromPage(page);
-
-        for (const row of rows) {
-          if (!row.userVote) {
-            row.userVote = String(vote);
-          }
-        }
-
+        for (const row of rows) if (!row.userVote) row.userVote = String(vote);
         const newRows = [];
-
         for (const row of rows) {
           const key = row.url || `${row.name}-${row.year}-${row.userVote}`;
-          if (!seenUrls.has(key)) {
-            seenUrls.add(key);
-            newRows.push(row);
-            allRows.push(row);
-          }
+          if (!seenUrls.has(key)) { seenUrls.add(key); newRows.push(row); allRows.push(row); }
         }
-
         console.log(`Found on page: ${rows.length}. New: ${newRows.length}. Total: ${allRows.length}.`);
         writeCsv(allRows, outputPath);
         console.log(`Saved: ${outputPath}`);
-
-        if (rows.length === 0 || newRows.length === 0) {
-          emptyPagesInRow += 1;
-        } else {
-          emptyPagesInRow = 0;
-        }
-
-        if (emptyPagesInRow >= 1) {
-          console.log(`No new rows for vote ${vote}. Moving to next vote bucket.`);
-          break;
-        }
+        emptyPagesInRow = (rows.length === 0 || newRows.length === 0) ? emptyPagesInRow + 1 : 0;
+        if (emptyPagesInRow >= 1) { console.log(`No new rows for vote ${vote}. Moving to next vote bucket.`); break; }
       }
     }
-
-    console.log("");
-    console.log(`Done. Exported rows: ${allRows.length}`);
+    console.log(`\nDone. Exported rows: ${allRows.length}`);
     console.log(`CSV: ${outputPath}`);
   } finally {
     await browser.close();
   }
-})().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+})().catch((error) => { console.error(error); process.exit(1); });
