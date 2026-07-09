@@ -42,7 +42,7 @@ examples/
 Установить Puppeteer:
 
 ```bash
-npm install puppeteer
+npm install
 ```
 
 Запустить экспорт:
