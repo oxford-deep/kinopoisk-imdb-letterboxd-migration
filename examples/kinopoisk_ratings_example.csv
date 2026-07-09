@@ -1,0 +1,3 @@
+dateTime,url,isSeries,name,originalName,year,duration,isWatched,userVote,rating,votes,ratingImdb,votesImdb
+2024-01-01,https://www.kinopoisk.ru/film/301/,false,Матрица,The Matrix,1999,136,true,10,8.5,1000000,8.7,2000000
+2024-01-02,https://www.kinopoisk.ru/film/326/,false,Побег из Шоушенка,The Shawshank Redemption,1994,142,true,9,9.1,900000,9.3,2900000
