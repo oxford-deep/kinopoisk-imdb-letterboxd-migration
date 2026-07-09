@@ -46,7 +46,7 @@ scripts/kinopoisk_votes_exporter.js
 В корне проекта выполните:
 
 ```bash
-npm install puppeteer
+npm install
 ```
 
 ### 1.2. Найти URL страницы оценок
