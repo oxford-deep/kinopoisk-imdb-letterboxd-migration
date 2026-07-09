@@ -20,6 +20,7 @@ scripts/
   kp_to_imdb.py                 Конвертация CSV Кинопоиска в CSV для IMDb
   kp_to_imdb_akas.py            Дополнительный матчинг через IMDb alternative titles
   imdb_bulk_rater_console.js    Импорт оценок в IMDb через DevTools Console
+  kinopoisk_votes_exporter.js   Экспорт оценок Кинопоиска в CSV через Puppeteer
 
 docs/
   workflow.md                   Полный маршрут миграции
@@ -35,7 +36,12 @@ examples/
 
 ## Быстрый маршрут
 
-1. Экспортировать оценки Кинопоиска в `ratings.csv`.
+1. Экспортировать оценки Кинопоиска в `ratings.csv`:
+
+```bash
+npm install puppeteer
+node scripts/kinopoisk_votes_exporter.js "https://www.kinopoisk.ru/user/<numeric_id>/votes/" ratings.csv
+```
 2. Запустить конвертацию:
 
 ```bash
